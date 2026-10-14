@@ -30,7 +30,8 @@ service cloud.firestore {
       // A signed-in user may create their own room, but cannot claim another user's room.
       allow create: if signedIn()
         && request.resource.data.ownerUid == request.auth.uid;
-      allow read: if canAccessRoom(roomId);
+      // Room documents contain only basic room metadata, so signed-in users can look up a Room ID to request access.
+      allow read: if signedIn();
       allow update, delete: if isOwner(roomId);
 
       match /members/{memberUid} {
