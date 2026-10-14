@@ -13,7 +13,7 @@
 <div class="shell">
 <header class="top">
   <div class="brand"><div class="logo">↗</div><div><h1>Room Ledger</h1><p>Shared expenses, sorted fairly.</p></div></div>
-  <div class="top-actions"><div class="cloud"><span class="dot" id="cloudDot"></span><span id="cloudText">Saved on this device</span></div><button class="btn" id="settingsBtn">⚙ Firebase setup</button><button class="btn" id="exportBtn">↓ Export CSV</button></div>
+  <div class="top-actions"><div class="cloud"><span class="dot" id="cloudDot"></span><span id="cloudText">Saved on this device</span></div><button class="btn primary" id="googleSignInBtn" type="button">Sign in with Google</button><button class="btn hidden" id="googleSignOutBtn" type="button">Sign out</button><button class="btn" id="settingsBtn">⚙ Firebase setup</button><button class="btn" id="exportBtn">↓ Export CSV</button><div id="authStatus" class="note" style="width:100%;text-align:right">Not signed in · Local-only mode</div></div>
 </header>
 <section class="hero"><div><div class="eyebrow">ROOMMATE LEDGER · NPR</div><h2>Everyone pays their fair share.</h2><p>Track shared spending and settle up without the awkward math.</p></div><div class="hero-stat"><span>All-time shared expenses</span><strong id="heroTotal">Rs. 0</strong></div></section>
 <section class="cards">
@@ -128,8 +128,8 @@ function render(){
  const personalRows=[...normalized].sort((a,b)=>b.date.localeCompare(a.date)||b.id-a.id);
  document.getElementById('personalRows').innerHTML=personalRows.map(t=>`<tr><td>${esc(t.date)}</td><td><strong>${'Payment'}: ${esc(t.from)} → ${esc(t.to)}</strong>${t.note?'<br><span class="tag">'+esc(t.note)+'</span>':''}</td><td>${esc(t.from)} → ${esc(t.to)}</td><td><strong>${money(t.amount)}</strong></td><td><button class="btn small" data-personal-delete="${t.id}">Delete</button></td></tr>`).join('');
  document.getElementById('personalEmpty').style.display=personalRows.length?'none':'block';
- document.getElementById('cloudDot').classList.toggle('on',!!state.cloud.url&&!!state.cloud.key);
- document.getElementById('cloudText').textContent=state.cloud.url&&state.cloud.key?'Cloud sync configured':'Saved on this device';
+ document.getElementById('cloudDot').classList.remove('on');
+ document.getElementById('cloudText').textContent='Saved on this device';
 }
 document.getElementById('date').value=new Date().toISOString().slice(0,10);
 document.getElementById('personalDate').value=new Date().toISOString().slice(0,10);
@@ -181,5 +181,87 @@ if(!state.setupDone){
  openRoommateManager(true);
  document.getElementById('modalCancel').classList.add('hidden');
 }
+</script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.10.0/firebase-app.js";
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/12.10.0/firebase-auth.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyDN_Bug6lq7Ma2vLy_bPqb0qySfO3NaZfs",
+  authDomain: "room-ledger-bcaad.firebaseapp.com",
+  projectId: "room-ledger-bcaad",
+  storageBucket: "room-ledger-bcaad.firebasestorage.app",
+  messagingSenderId: "610266694537",
+  appId: "1:610266694537:web:b0acdca73b66e7c8a05758",
+  measurementId: "G-88JPN4H3K4"
+};
+
+const signInButton = document.getElementById("googleSignInBtn");
+const signOutButton = document.getElementById("googleSignOutBtn");
+const authStatus = document.getElementById("authStatus");
+const settingsButton = document.getElementById("settingsBtn");
+let auth = null;
+
+try {
+  const app = initializeApp(firebaseConfig);
+  auth = getAuth(app);
+  onAuthStateChanged(auth, user => {
+    if (user) {
+      authStatus.textContent = "Signed in: " + (user.displayName || user.email || "Google account") + " · Cloud sharing not connected yet";
+      signInButton.classList.add("hidden");
+      signOutButton.classList.remove("hidden");
+      signOutButton.textContent = "Sign out";
+    } else {
+      authStatus.textContent = "Not signed in · Local-only mode";
+      signInButton.classList.remove("hidden");
+      signOutButton.classList.add("hidden");
+    }
+  });
+} catch (error) {
+  console.error("Firebase initialization failed:", error);
+  authStatus.textContent = "Firebase could not initialize. Check the Firebase web app configuration.";
+  signInButton.disabled = true;
+}
+
+signInButton.addEventListener("click", async () => {
+  if (!auth) return;
+  signInButton.disabled = true;
+  signInButton.textContent = "Opening Google sign-in…";
+  try {
+    await signInWithPopup(auth, new GoogleAuthProvider());
+    document.getElementById("toast").textContent = "Google sign-in successful.";
+    document.getElementById("toast").style.display = "block";
+    setTimeout(() => document.getElementById("toast").style.display = "none", 2800);
+  } catch (error) {
+    console.error("Google sign-in failed:", error);
+    const message = error.code === "auth/popup-closed-by-user"
+      ? "Google sign-in was closed before finishing."
+      : error.code === "auth/unauthorized-domain"
+        ? "This website domain is not authorized in Firebase Authentication."
+        : "Google sign-in failed: " + (error.message || error.code || "Please try again.");
+    document.getElementById("toast").textContent = message;
+    document.getElementById("toast").style.display = "block";
+    setTimeout(() => document.getElementById("toast").style.display = "none", 5000);
+  } finally {
+    signInButton.disabled = false;
+    signInButton.textContent = "Sign in with Google";
+  }
+});
+
+signOutButton.addEventListener("click", async () => {
+  if (!auth) return;
+  try {
+    await signOut(auth);
+  } catch (error) {
+    console.error("Sign-out failed:", error);
+    alert("Could not sign out. Please try again.");
+  }
+});
+
+settingsButton.addEventListener("click", () => {
+  openModal("Firebase setup status", `<p><strong>Google sign-in is now wired into this branch.</strong></p><p>Sign-in identifies each roommate with their Google account. The next step is to connect Cloud Firestore so the room owner can create a room and approve members.</p><p><strong>Important:</strong> expenses are still saved only in this browser. Signing in does not upload or share any existing records.</p><p class="note">Do not deploy this branch to your public website yet. The main branch remains unchanged.</p>`, () => closeModal());
+  document.getElementById("modalSave").classList.add("hidden");
+  document.getElementById("modalCancel").textContent = "Close";
+});
 </script>
 </body></html>
