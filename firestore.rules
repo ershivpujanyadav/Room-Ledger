@@ -40,6 +40,16 @@ service cloud.firestore {
           && memberUid != get(/databases/$(database)/documents/rooms/$(roomId)).data.ownerUid;
       }
 
+      match /joinRequests/{requestUid} {
+        allow create: if signedIn()
+          && request.auth.uid == requestUid
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.status == 'pending';
+        allow read: if isOwner(roomId)
+          || (signedIn() && request.auth.uid == requestUid);
+        allow update, delete: if isOwner(roomId);
+      }
+
       match /expenses/{expenseId} {
         allow read, create, update, delete: if canAccessRoom(roomId);
       }
