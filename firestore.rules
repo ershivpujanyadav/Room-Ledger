@@ -1,0 +1,57 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function roomExists(roomId) {
+      return exists(/databases/$(database)/documents/rooms/$(roomId));
+    }
+
+    function isOwner(roomId) {
+      return signedIn()
+        && roomExists(roomId)
+        && get(/databases/$(database)/documents/rooms/$(roomId)).data.ownerUid == request.auth.uid;
+    }
+
+    function isApprovedMember(roomId) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid))
+        && get(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid)).data.status == 'approved';
+    }
+
+    function canAccessRoom(roomId) {
+      return isOwner(roomId) || isApprovedMember(roomId);
+    }
+
+    match /rooms/{roomId} {
+      // A signed-in user may create their own room, but cannot claim another user's room.
+      allow create: if signedIn()
+        && request.resource.data.ownerUid == request.auth.uid;
+      allow read: if canAccessRoom(roomId);
+      allow update, delete: if isOwner(roomId);
+
+      match /members/{memberUid} {
+        // Only the owner can approve, change, or remove members.
+        allow read: if canAccessRoom(roomId);
+        allow create, update, delete: if isOwner(roomId)
+          && memberUid != get(/databases/$(database)/documents/rooms/$(roomId)).data.ownerUid;
+      }
+
+      match /expenses/{expenseId} {
+        allow read, create, update, delete: if canAccessRoom(roomId);
+      }
+
+      match /personalTransactions/{transactionId} {
+        allow read, create, update, delete: if canAccessRoom(roomId);
+      }
+    }
+
+    // Everything outside the room data model stays closed.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
