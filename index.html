@@ -13,7 +13,7 @@
 <div class="shell">
 <header class="top">
   <div class="brand"><div class="logo">↗</div><div><h1>Room Ledger</h1><p>Shared expenses, sorted fairly.</p></div></div>
-  <div class="top-actions"><div class="cloud"><span class="dot" id="cloudDot"></span><span id="cloudText">Saved on this device</span></div><button class="btn primary" id="googleSignInBtn" type="button">Sign in with Google</button><button class="btn hidden" id="googleSignOutBtn" type="button">Sign out</button><button class="btn" id="settingsBtn">⚙ Firebase setup</button><button class="btn" id="exportBtn">↓ Export CSV</button><div id="authStatus" class="note" style="width:100%;text-align:right">Not signed in · Local-only mode</div></div>
+  <div class="top-actions"><div class="cloud"><span class="dot" id="cloudDot"></span><span id="cloudText">Saved on this device</span></div><button class="btn primary" id="googleSignInBtn" type="button">Sign in with Google</button><button class="btn" id="roomSharingBtn" type="button" disabled>Room sharing</button><button class="btn hidden" id="googleSignOutBtn" type="button">Sign out</button><button class="btn" id="settingsBtn">⚙ Firebase setup</button><button class="btn" id="exportBtn">↓ Export CSV</button><div id="authStatus" class="note" style="width:100%;text-align:right">Not signed in · Local-only mode</div></div>
 </header>
 <section class="hero"><div><div class="eyebrow">ROOMMATE LEDGER · NPR</div><h2>Everyone pays their fair share.</h2><p>Track shared spending and settle up without the awkward math.</p></div><div class="hero-stat"><span>All-time shared expenses</span><strong id="heroTotal">Rs. 0</strong></div></section>
 <section class="cards">
@@ -185,6 +185,7 @@ if(!state.setupDone){
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.10.0/firebase-app.js";
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/12.10.0/firebase-auth.js";
+import { getFirestore, doc, setDoc, getDoc, collection, getDocs, serverTimestamp } from "https://www.gstatic.com/firebasejs/12.10.0/firebase-firestore.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyDN_Bug6lq7Ma2vLy_bPqb0qySfO3NaZfs",
@@ -200,12 +201,18 @@ const signInButton = document.getElementById("googleSignInBtn");
 const signOutButton = document.getElementById("googleSignOutBtn");
 const authStatus = document.getElementById("authStatus");
 const settingsButton = document.getElementById("settingsBtn");
+const roomSharingButton = document.getElementById("roomSharingBtn");
 let auth = null;
+let db = null;
+let currentUser = null;
 
 try {
   const app = initializeApp(firebaseConfig);
   auth = getAuth(app);
+  db = getFirestore(app);
   onAuthStateChanged(auth, user => {
+    currentUser = user;
+    roomSharingButton.disabled = !user;
     if (user) {
       authStatus.textContent = "Signed in: " + (user.displayName || user.email || "Google account") + " · Cloud sharing not connected yet";
       signInButton.classList.add("hidden");
@@ -247,6 +254,105 @@ signInButton.addEventListener("click", async () => {
     signInButton.textContent = "Sign in with Google";
   }
 });
+
+
+roomSharingButton.addEventListener("click", async () => {
+  if (!currentUser || !db) return;
+  const savedRoomId = localStorage.getItem("room-ledger-room-id") || "";
+  const isOwner = localStorage.getItem("room-ledger-room-owner") === currentUser.uid;
+  const body = '<p>Signed in as <strong>' + escapeHtml(currentUser.displayName || currentUser.email || currentUser.uid) + '</strong>.</p>' +
+    '<p>Create a room, or paste the Room ID given to you by the owner. The owner must approve join requests.</p>' +
+    '<div class="field" style="margin:12px 0"><label for="joinRoomId">Room ID to join</label><input id="joinRoomId" placeholder="Paste the Room ID here"></div>' +
+    (savedRoomId ? '<p><strong>Saved Room ID:</strong><br><code>' + escapeHtml(savedRoomId) + '</code></p>' : '') +
+    '<p class="note">Your existing local expenses are not uploaded or shared yet.</p>' +
+    '<div id="roomSharingMessage" class="note" style="margin-top:10px"></div>' +
+    '<div class="modal-actions" style="justify-content:flex-start;flex-wrap:wrap"><button class="btn primary" type="button" id="createRoomAction">Create new room</button><button class="btn" type="button" id="requestJoinAction">Request to join</button>' +
+    (isOwner ? '<button class="btn" type="button" id="reviewRequestsAction">Review join requests</button>' : '') + '</div><div id="joinRequestsList"></div>';
+  openModal("Room sharing", body, null);
+  document.getElementById("modalSave").classList.add("hidden");
+  document.getElementById("modalCancel").textContent = "Close";
+  const say = message => { document.getElementById("roomSharingMessage").textContent = message; };
+  document.getElementById("createRoomAction").addEventListener("click", async () => {
+    try {
+      const roomRef = doc(collection(db, "rooms"));
+      await setDoc(roomRef, { ownerUid: currentUser.uid, ownerName: currentUser.displayName || currentUser.email || "Room owner", createdAt: serverTimestamp(), name: "My Room" });
+      localStorage.setItem("room-ledger-room-id", roomRef.id);
+      localStorage.setItem("room-ledger-room-owner", currentUser.uid);
+      say("Room created. Share this Room ID with roommates: " + roomRef.id);
+    } catch (error) {
+      console.error("Room creation failed", error);
+      say("Could not create the room. The Firestore rules must be published in Firebase Console before this works.");
+    }
+  });
+  document.getElementById("requestJoinAction").addEventListener("click", async () => {
+    const id = document.getElementById("joinRoomId").value.trim();
+    if (!id) return say("Paste the Room ID first.");
+    try {
+      const roomSnap = await getDoc(doc(db, "rooms", id));
+      if (!roomSnap.exists()) return say("Room not found. Check the Room ID with the owner.");
+      if (roomSnap.data().ownerUid === currentUser.uid) {
+        localStorage.setItem("room-ledger-room-id", id);
+        localStorage.setItem("room-ledger-room-owner", currentUser.uid);
+        return say("You already own this room.");
+      }
+      const requestRef = doc(db, "rooms", id, "joinRequests", currentUser.uid);
+      const existing = await getDoc(requestRef);
+      if (existing.exists()) return say("Your request status is: " + existing.data().status + ". Ask the owner to review it.");
+      await setDoc(requestRef, { uid: currentUser.uid, displayName: currentUser.displayName || "", email: currentUser.email || "", status: "pending", requestedAt: serverTimestamp() });
+      localStorage.setItem("room-ledger-room-id", id);
+      localStorage.removeItem("room-ledger-room-owner");
+      say("Request sent. The owner must approve you before you can access shared room data.");
+    } catch (error) {
+      console.error("Join request failed", error);
+      say("Could not send request. Firestore rules may not be published yet.");
+    }
+  });
+  const review = document.getElementById("reviewRequestsAction");
+  if (review) review.addEventListener("click", async () => {
+    try {
+      const rid = localStorage.getItem("room-ledger-room-id");
+      if (!rid || localStorage.getItem("room-ledger-room-owner") !== currentUser.uid) return say("Open this on the browser where you created the room.");
+      const requests = await getDocs(collection(db, "rooms", rid, "joinRequests"));
+      const list = document.getElementById("joinRequestsList");
+      list.innerHTML = "";
+      if (requests.empty) { list.textContent = "No join requests yet."; return; }
+      requests.forEach(requestDoc => {
+        const data = requestDoc.data();
+        const item = document.createElement("div");
+        item.style.cssText = "padding:12px 0;border-bottom:1px solid var(--line)";
+        const label = document.createElement("p");
+        label.textContent = (data.displayName || data.email || data.uid) + " — " + data.status;
+        item.appendChild(label);
+        if (data.status === "pending") {
+          const approve = document.createElement("button");
+          approve.className = "btn primary small";
+          approve.textContent = "Approve";
+          approve.addEventListener("click", async () => {
+            try {
+              await setDoc(doc(db, "rooms", rid, "members", data.uid), { uid: data.uid, displayName: data.displayName || "", email: data.email || "", status: "approved", approvedAt: serverTimestamp() });
+              await setDoc(doc(db, "rooms", rid, "joinRequests", data.uid), { uid: data.uid, displayName: data.displayName || "", email: data.email || "", status: "approved", requestedAt: data.requestedAt || null, reviewedAt: serverTimestamp() });
+              item.remove();
+              say("Roommate approved. Cloud expense sharing is the next implementation step.");
+            } catch (error) {
+              console.error("Approval failed", error);
+              say("Could not approve. Firestore rules may not be published yet.");
+            }
+          });
+          item.appendChild(approve);
+        }
+        list.appendChild(item);
+      });
+    } catch (error) {
+      console.error("Request review failed", error);
+      say("Could not load requests. Firestore rules may not be published yet.");
+    }
+  });
+});
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, function (ch) {
+    return { "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[ch];
+  });
+}
 
 signOutButton.addEventListener("click", async () => {
   if (!auth) return;
